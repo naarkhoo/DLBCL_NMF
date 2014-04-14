@@ -29,7 +29,7 @@ DISSECTOR_create_components.v1(            #  Project an input dataset into comp
 source("/home/superiois/Downloads/projectx3/DLBCL_NMF/code/DISSECTOR_lib.v3.R")
 
 DISSECTOR_make_heatmap_of_matrix.v1(
-	input_dataset            = "/home/superiois/Downloads/projectx3/DLBCL_NMF/data/DLBCL_OE_L1000_NMF_TA.OE002_A375_72H.gct", # Input dataset (GCT).
+	input_dataset            = "/home/superiois/Downloads/projectx3/DLBCL_NMF/outputs/compound_A375_7.H_w.gct", # Input dataset (GCT).
 	annot_file               = c("/home/superiois/Downloads/projectx3/DLBCL_NMF/data/compound_classes_A375_7.v3.csv", "Sample", "Type", T),
 	transpose_data           = F,           # Transpose input matrix
 	append_annot             = T,           # Append annotation to column names
