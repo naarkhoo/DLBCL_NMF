@@ -1,10 +1,176 @@
    library(scatterplot3d)
    library(MASS)
    library(RColorBrewer)
-#   library(rgl) 
-#   library(bpca)
-#   library(smacof)
+   library(rgl)
+   library(bpca)
+   library(smacof)
+   library(NMF)
 
+   DISSECTOR_explore_component_creation.v1 <- function(
+      #
+      #  Obtain statistics to choose number of components
+      #
+      input_dataset,                    # Input GCT dataset A where the matrix decomposition takes place (A ~ W x H)
+      input_normalization = "rank",     # Normalization for the input dataset: "rank"
+      k.min = 2,                        # Range of components: minimum
+      k.max = 5,                        # Range of components: maximum
+      k.incr = 1,                       # Range of components: increment                                         
+      number_of_runs = 20,              # Number of runs to explore in the matrix decomposition
+      method = "NMF",                   # Method for matrix factorization: NMF or NMF_offset (IMF under construction)
+      gene_subset = "all-genes",        # Universe of genes to consider for matrix decomposition: "gene-sets", "all-genes"
+      gene_sets_files = NULL,           # If gene_subset = "gene-sets" GMT files with gene sets
+      gene_sets = NULL,                 # If gene_subset = "gene-sets" then name of the specific gene set(s) in gene_sets_file to use
+      normalize_after_selection = T,    # If gene_subset = "gene-sets," normalize after selection the gene subset
+      output_plots)                     # Output PDF file with NMF plots
+  {
+   set.seed(5209761)
+   
+   mycol <- vector(length=512, mode = "numeric")   # Red/Blue "pinkogram" color map
+   for (k in 1:256) mycol[k] <- rgb(255, k - 1, k - 1, maxColorValue=255)
+   for (k in 257:512) mycol[k] <- rgb(511 - (k - 1), 511 - (k - 1), 255, maxColorValue=255)
+   mycol <- rev(mycol)
+   ncolors <- length(mycol)
+
+#   comp.names <- paste("C", seq(1, number_of_comp), "_", number_of_comp, sep="")
+    
+   # Read expression dataset
+
+   dataset.1 <- MSIG.Gct2Frame(filename = input_dataset)
+   m.1 <- data.matrix(dataset.1$ds)
+   print(paste("Dimensions matrix A:", nrow(m.1), ncol(m.1)))
+
+  # heatmap(m.1, scale="row", col=mycol, margins=c(15, 15), cexRow=0.10, cexCol=0.5, main="Sorted A Matrix", xlab = "Components", ylab= "Genes")   
+
+   if (normalize_after_selection == F) {  # Normalize input data here before selection
+     if (input_normalization == "rank") {
+
+         max.n <- 10000
+         for (i in 1:ncol(m.1)) m.1[,i] <- (max.n - 1) * (rank(m.1[,i]) - 1) /(nrow(m.1) - 1) + 1
+   
+      } else if (input_normalization == "none") {   
+
+      } else {
+         stop(paste("ERROR: unknown input normalization:", input_normalization))  
+      }
+   }
+   
+   if (gene_subset == "gene-sets") {  # select relevant genes from gene sets
+
+        print("Selecting relevant genes from gene sets")
+
+	max.G <- 0
+	max.N <- 0
+	for (gsdb in gene_sets_files) {
+		GSDB <- Read.GeneSets.db(gsdb, thres.min = 2, thres.max = 2000, gene.names = NULL)
+		max.G <- max(max.G, max(GSDB$size.G))
+		max.N <- max.N +  GSDB$N.gs
+	}
+	N.gs <- 0
+	gs <- matrix("null", nrow=max.N, ncol=max.G)
+	gs.names <- vector(length=max.N, mode="character")
+	gs.descs <- vector(length=max.N, mode="character")
+	size.G <- vector(length=max.N, mode="numeric")
+	start <- 1
+	for (gsdb in gene_sets_files) {  # Read all the gene sets from gene set files
+		GSDB <- Read.GeneSets.db(gsdb, thres.min = 2, thres.max = 2000, gene.names = NULL)
+		N.gs <- GSDB$N.gs 
+		gs.names[start:(start + N.gs - 1)] <- GSDB$gs.names
+		gs.descs[start:(start + N.gs - 1)] <- GSDB$gs.desc
+		size.G[start:(start + N.gs - 1)] <- GSDB$size.G
+		gs[start:(start + N.gs - 1), 1:max(GSDB$size.G)] <- GSDB$gs[1:N.gs, 1:max(GSDB$size.G)]
+		start <- start + N.gs
+	}
+	N.gs <- max.N
+	
+	# Select desired gene sets
+	
+	locs <- match(gene_sets, gs.names)
+        print(rbind(gene_sets, locs))
+	N.gs <- sum(!is.na(locs))
+	if(N.gs > 1) { 
+           gs <- gs[locs,]
+	} else { 
+           gs <- t(as.matrix(gs[locs,]))   # Force vector to matrix if only one gene set specified
+        }
+	gs.names <- gs.names[locs]
+	gs.descs <- gs.descs[locs]
+	size.G <- size.G[locs]
+
+        genes <- NULL
+       	for (gs.i in 1:N.gs) {
+   	   gene.set <- gs[gs.i, 1:size.G[gs.i]]
+           genes <- c(genes, gene.set)
+         }
+        print(paste("Number of selected genes:", length(genes)))
+        genes <- unique(genes)
+        print(paste("Number of unique selected genes:", length(genes)))        
+        genes <- intersect(genes, row.names(m.1))
+        print(paste("Number of overlapping genes (final set):", length(genes)))        
+        m.2 <- m.1[genes,]
+        print("Dimensions of selected input data:")
+        print(dim(m.2))
+
+   } else if (gene_subset == "all-genes") {
+
+        print("Using all genes from gene sets")
+        
+      m.2 <- m.1
+   } else {
+      stop(paste("ERROR: unknown gene subset selection:", gene_subset))
+   }
+
+   if (normalize_after_selection == T) {  # Normalize input data here after selection
+   
+      if (input_normalization == "rank") {
+
+         max.n <- 10000
+         for (i in 1:ncol(m.2)) m.2[,i] <- (max.n - 1) * (rank(m.2[,i]) - 1) /(nrow(m.2) - 1) + 1
+
+       } else if (input_normalization == "none") {   
+
+       } else {
+         stop(paste("ERROR: unknown input normalization:", input_normalization))  
+       }
+    }
+   
+   # Perform Matrix Factorization to find components
+
+   if (method == "NMF") {
+     NMF.models <- nmf(m.2, seq(k.min, k.max + 1, k.incr), nrun = number_of_runs, method="brunet", seed=9876)
+   } else if (method == "IMF") {
+
+     # To be added
+
+   } else if (method == "NMF_offset") {
+
+     NMF.models <- nmf(m.2, seq(k.min, k.max + 1, k.incr), nrun = number_of_runs, method="offset", seed=9876)
+   }
+
+   quartz()
+   plot(NMF.models)
+
+   NMF.sum <- summary(NMF.models)
+   k.vec <- seq(k.min, k.max + 1, 1)
+   cophen <- NMF.sum[, "cophenetic"]
+   peak <- rep(0, length(k.vec))
+
+   pdf(file=output_plots, height=8.5, width=11)
+
+   plot(k.vec, cophen)
+
+   for (h in 2:(length(cophen) - 1)) if (cophen[h - 1] < cophen[h] & cophen[h] > cophen[h + 1]) peak[h] <- 1
+   k.peaks <- k.vec[peak == 1]
+   k <- rev(k.peaks)[1]
+   k
+   print(paste("Suggested number of components:", k))
+
+   consensusmap(NMF.models)
+   
+   # end of matrix factorization
+
+   dev.off()
+
+ }
 
    DISSECTOR_produce_MDS_and_network.v1 <- function(
       #
@@ -147,11 +313,10 @@
          if (plot_row_dimensions == T)  lines3d(c(0,row.objects[i,1]), c(0, row.objects[i,2]), c(0, row.objects[i,3]), lwd = 1, color="red")
       }
 
-      s <- strsplit(movie_file, split="/")
-      movie.name <- s[[1]][length(s[[1]])]
-      dir <- paste(s[[1]][seq(1, length(s[[1]])-1)], collapse="/")
-      dir <- paste(dir, "/", sep="")
-
+#      s <- strsplit(MDS_movie_file, split="/")
+#      movie.name <- s[[1]][length(s[[1]])]
+#      dir <- paste(s[[1]][seq(1, length(s[[1]])-1)], collapse="/")
+#      dir <- paste(dir, "/", sep="")
 #   my.movie3d(spin3d(axis=c(1,1,1), rpm=2), duration=5, fps = 10, movie = movie_file, dir = dir,
 #          convert = TRUE, clean = TRUE, verbose=TRUE, top = TRUE, type = "gif", startTime = 0)
 
@@ -171,7 +336,7 @@
                                                #  "EXP_PATHWAYS" = "~/CGP2013/Distiller/CCLE_MSigDB_plus_oncogenic.PATHWAYS.v2.gct",
                                                #  "EXP_GENES"    = "~/CGP2013/CCLE/rnaseq.v3.gct",
                                                #  "RPPA"         = "~/CGP2013/Distiller/RPPA.dat.gct")
-       feature.directions,                     # c(0, 1, 1, 1, 1),                                         
+       feature.dir,                            # c(0, 1, 1, 1, 1),                                         
        n.markers            = 25,                         # Number of top hits shown in the heatmaps
        n.perm               = 10,                                         
        char.scaling         = 0.575,                   # Character scaling for heatmaps
@@ -211,7 +376,7 @@
         
             t.dir <- ifelse (length(target.dir) == 1, target.dir[[1]], target.dir[[d]])
            
-            dir <- ifelse(xor(t.dir, feature.directions[[f]]), "negative", "positive")
+            dir <- ifelse(xor(t.dir, feature.dir[[f]]), "negative", "positive")
 
             print(paste("Reading target file:", target.file))
             dataset.1 <- MSIG.Gct2Frame(filename = target.file)
@@ -333,7 +498,6 @@
       gene.list <- annot.table[, annot_file[[2]]]
       annot.list <- annot.table[, annot_file[[3]]]
       gene.set <- vector(length=ncol(H), mode="character")
-
       if (annot_file[[4]] == T) {
          for (i in 1:ncol(H)) {
             gene.set[i] <- strsplit(colnames(H)[i], split="_")[[1]]
@@ -346,7 +510,11 @@
       for (k in 1:length(gene.class)) gene.class[k] <- substr(gene.class[k], 1, 10)
       all.classes <- unique(gene.class)
       colnames(H) <- paste(colnames(H), " (", gene.class, ") ", sep="")
+    } else {
+      gene.class <- rep(" ", ncol(H))
+      all.classes <- " "
    }
+
    
    Ht <- t(H)
 
@@ -377,11 +545,12 @@
       par(mar = c(1, 20, 4, 6))    
       image(1:length(V), 1:1, as.matrix(V), zlim = c(0, ncolors), col=mycol, axes=FALSE, main=row.names(Ht)[i], sub = "", cex.main = 2, xlab= "", ylab="")
 
-      if (!is.null(annot_file)) {
-         col.classes <- c(brewer.pal(7, "Set1"), brewer.pal(7, "Pastel1"), brewer.pal(7, "Dark2"), brewer.pal(7, "Paired"), brewer.pal(7, "Pastel2"),
+      col.classes <- c(brewer.pal(7, "Set1"), brewer.pal(7, "Pastel1"), brewer.pal(7, "Dark2"), brewer.pal(7, "Paired"), brewer.pal(7, "Pastel2"),
                  brewer.pal(8, "Accent"), brewer.pal(8, "Set2"), brewer.pal(11, "Spectral"), brewer.pal(12, "Set3"),
                  sample(c(brewer.pal(9, "Blues"), brewer.pal(9, "Reds"), brewer.pal(9, "Oranges"), brewer.pal(9, "Greys"),
                           brewer.pal(9, "Purples"), brewer.pal(9, "Greens"))))
+
+      if (!is.null(annot_file)) {
          gc <- gene.class[ind]
          cols <- col.classes[match(gc, all.classes)]
       } else {
@@ -453,7 +622,11 @@
       annot_file = NULL,       # Phenotype annotation file (TXT, optional) in format c(file, name_column, annot_column, use_prefix)
       transpose_data = F,      # Transpose input matrix
       append_annot = F,        # Append annotation to column names
-      sorting_method = "MDS",  # Sorting method for columns inside a phenotype: MDS (Multi_dimensinal Scaling) or HC (Hiererachical Clustering)
+      sorting_method = "MDS",  # Sorting method for columns inside a phenotype: MDS (Multi_dimensional Scaling) or HC (Hiererachical Clustering)
+      cex.rows = "auto",       # Character size for row names
+      cex.cols = "auto",       # Character size for col names
+      cex.phen = "auto",       # Character size for phenotype names
+      str.phen = "90",         # Degrees: orientation of phenotype labels                                                  
       output_plot_landscape,   # Output (PDF) plot in landscape format
       output_plot_portrait)    # Output (PDF) plot in portrait format
   {
@@ -469,7 +642,7 @@
    if (transpose_data == T) H <- t(H)
 
    width <- ceiling(ncol(H)/100)
-   if (width < 11) width <- 11
+   if (width < 11) width <- 14
    pdf(file=output_plot_landscape, height=8.5, width=width)
    
    # Read annotation file
@@ -479,7 +652,6 @@
       column.list <- annot.table[, annot_file[[2]]]
       annot.list <- annot.table[, annot_file[[3]]]
       column.set <- vector(length=ncol(H), mode="character")
-
       if (annot_file[[4]] == T) {
          for (i in 1:ncol(H)) {
             column.set[i] <- strsplit(colnames(H)[i], split="_")[[1]]
@@ -487,26 +659,11 @@
       } else {
          column.set <- colnames(H)
       }
-
-#print(column.set)
-#print(annot.list)
-
-
-
       locs <- match(column.set, column.list)
-print("c.list")
-print(cbind(column.set, column.list))
-
-
       column.class <- annot.list[locs]
-
       column.class[is.na(column.class)] <- "UNLABELED"
       for (k in 1:length(column.class)) column.class[k] <- substr(column.class[k], 1, 20)
       all.classes <- unique(column.class)
-
-
-
-
       if (append_annot == T) colnames(H) <- paste(colnames(H), " (", column.class, ") ", sep="")
    } else {
       column.class <- rep(" ", ncol(H))
@@ -514,7 +671,7 @@ print(cbind(column.set, column.list))
    }
   
    # Color map
-
+ 
    mycol <- vector(length=512, mode = "numeric")
    for (k in 1:256) mycol[k] <- rgb(255, k - 1, k - 1, maxColorValue=255)
    for (k in 257:512) mycol[k] <- rgb(511 - (k - 1), 511 - (k - 1), 255, maxColorValue=255)
@@ -525,7 +682,10 @@ print(cbind(column.set, column.list))
               mycol[256 - 75],                          # Binary feature's 0's color (blue)
               mycol[256 + 220])                         # Binary feature's 1's color (red)
    cex.axis = 1
-   phen.col <- c(brewer.pal(7, "Set1"), brewer.pal(7, "Pastel1"), brewer.pal(7, "Dark2"), brewer.pal(7, "Paired"), brewer.pal(7, "Pastel2"),
+
+   # demo("colors")
+   phen.col <- c("darkseagreen2", "mediumorchid2", brewer.pal(7, "Set1"), brewer.pal(7, "Pastel1"), brewer.pal(7, "Dark2"),
+                 brewer.pal(7, "Paired"), brewer.pal(7, "Pastel2"),
                  brewer.pal(8, "Accent"), brewer.pal(8, "Set2"), brewer.pal(11, "Spectral"), brewer.pal(12, "Set3"),
                  sample(c(brewer.pal(9, "Blues"), brewer.pal(9, "Reds"), brewer.pal(9, "Oranges"), brewer.pal(9, "Greys"),
                           brewer.pal(9, "Purples"), brewer.pal(9, "Greens"))))
@@ -565,32 +725,30 @@ print(cbind(column.set, column.list))
    H <- H[, ind]
    column.class <- column.class[ind]
    all.classes <- unique(column.class)
-
+   
    V1.phen <- match(column.class, all.classes)
    par(mar = c(1, 10, 2, 6))
    image(1:length(V1.phen), 1:1, as.matrix(V1.phen), col=phen.col[1:max(V1.phen)], axes=FALSE, main="Phenotype", sub = "", xlab= "", ylab="")
    axis(2, at=1:1, labels="Phenotype", adj= 0.5, tick=FALSE, las = 1, cex.axis=1, font.axis=1, line=-1)
 
-
-   leg.txt <- all.classes
-   for (i in 1:length(leg.txt)) leg.txt[i] <- substr(leg.txt[i], 1, 25)
-   boundaries <- NULL
-   for (i in 2:length(column.class)) {
-      if (column.class[i] != column.class[i-1]) boundaries <- c(boundaries, i-1)
+   if (!is.null(annot_file)) {
+      leg.txt <- all.classes
+      for (i in 1:length(leg.txt)) leg.txt[i] <- substr(leg.txt[i], 1, 25)
+      boundaries <- NULL
+      for (i in 2:length(column.class)) {
+         if (column.class[i] != column.class[i-1]) boundaries <- c(boundaries, i-1)
+      }
+      boundaries <- c(boundaries, length(column.class))    
+      locs.bound <- c(boundaries[1]/2, boundaries[2:length(boundaries)] - (boundaries[2:length(boundaries)] - boundaries[1:(length(boundaries)-1)])/2)
+      for (i in 1:length(leg.txt)) {
+         if (cex.phen == "auto") cex.phen <- 0.05 + 7/ifelse(nchar(leg.txt[i]) < 6, 6, nchar(leg.txt[i]))
+#        text(locs.bound[i], 1, labels=leg.txt[i], adj=c(0.5, 1), srt=str.phen, cex=cex.phen)
+         text(locs.bound[i], 1, labels=leg.txt[i], adj=c(0, 1), srt=str.phen, cex=cex.phen)      
+       }
     }
-
-
-   boundaries <- c(boundaries, length(column.class))    
-
-   locs.bound <- c(boundaries[1]/2, boundaries[2:length(boundaries)] - (boundaries[2:length(boundaries)] - boundaries[1:(length(boundaries)-1)])/2)
-   for (i in 1:length(leg.txt)) {
-      text.size <- 0.05 + 7/ifelse(nchar(leg.txt[i]) < 6, 6, nchar(leg.txt[i]))
-      text(locs.bound[i], 1, labels=leg.txt[i], adj=c(0.5, 1), srt=90, cex=text.size)
-    }
- 
+   
   # Sort columns inside each phenotypic class 
-
-
+   
    for (k in all.classes) {
       if (sum(column.class == k) <= 1) next;
       V1 <- H[, column.class == k]
@@ -607,7 +765,7 @@ print(cbind(column.set, column.list))
       V1 <- V1[ , ind]
       H[, column.class == k] <- V1
    }
-
+ 
    V2 <- apply(H, MARGIN=2, FUN=rev)
 
    lower.space <-  ceiling(4 + 100/nrow(H))
@@ -615,49 +773,26 @@ print(cbind(column.set, column.list))
 
    image(1:ncol(V2), 1:nrow(V2), t(V2), zlim = c(0, max.cont.color + 3), col=mycol, axes=FALSE, main="Matrix Sorted by Phenotype",
          sub = "", xlab= "", ylab="", cex.main=1)
-
-
-   cex.rows <- 0.20 + 200/(nrow(V2) * max(nchar(row.names(V2))) + 200)
-
-
+   if (cex.rows == "auto") cex.rows <- 0.20 + 200/(nrow(V2) * max(nchar(row.names(V2))) + 200)
 
    axis(2, at=1:nrow(V2), labels=row.names(V2), adj= 0.5, tick=FALSE, las = 1, cex.axis=cex.rows, font.axis=1, line=-1)
-
-    print("boundries is ")
-	print(boundaries)
-  for (i in 1:(length(boundaries)-1)) 
-{
-print(i)
-print("x is ")
-print(c(boundaries[i]+0.5, boundaries[i]+0.5))
-print("y is ")
-print(c(0.5, nrow(V2) + 0.5))
-
-lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lty=1, col="black")
-}
-    print("a-here")
-
+   if (!is.null(annot_file)) {   
+      for (i in 1:(length(boundaries)-1)) lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lty=1, col="black")
+    }
    if (!is.null(annot_file)) {
       cols2 <- phen.col[match(column.class, all.classes)]
    } else {
       cols2 = "black"
    }
-
-
-   cex.cols <- 0.20 + 200/(ncol(V2) * max(nchar(colnames(V2))) + 200)
+   if (cex.cols == "auto") cex.cols <- 0.20 + 200/(ncol(V2) * max(nchar(colnames(V2))) + 200)
    mtext(colnames(V2), at=1:ncol(V2), side = 1, cex=cex.cols, col=cols2, line=0, las=3, font=2, family="")
    
    # Legend
 
    par(mar = c(3, 35, 1, 6))
-
-
    leg.set <- seq(-cutoff, cutoff, 0.05)
-
    image(1:length(leg.set), 1:1, as.matrix(leg.set), zlim=c(-cutoff, cutoff), col=mycol, axes=FALSE, main="Matrix Standardized Profile",
        sub = "", xlab= "", ylab="",font=2, family="", mgp = c(0, 0, 0), cex.main=0.8)
-
-
    ticks <- seq(-cutoff, cutoff, 0.5)
    tick.cols <- rep("black", 5)
    tick.lwd <- 1
@@ -666,9 +801,6 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    axis(1, at=locs, labels=ticks, adj= 0.5, tick=T, cex=0.6, cex.axis=0.6, line=0, font=2, family="", mgp = c(0.1, 0.1, 0.1))
 
    # Plot sorted by columns and rows ------------------------------------------------------------------------------
-
-
-
 
    nf <- layout(matrix(c(1, 2), 2, 1, byrow=T), 1, c(8, 1), FALSE)
 
@@ -684,9 +816,9 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    par(mar = c(lower.space, 10, 2, 6))
    image(1:ncol(V3), 1:nrow(V3), t(V3), zlim = c(0, max.cont.color + 3), col=mycol, axes=FALSE, main="Matrix Sorted (Rows and Columns)",
          sub = "", xlab= "", ylab="", cex.main=1)
-   cex.rows <- 0.20 + 200/(nrow(V3) * max(nchar(row.names(V3))) + 200)
+   if (cex.rows == "auto")  cex.rows <- 0.20 + 200/(nrow(V3) * max(nchar(row.names(V3))) + 200)
    axis(2, at=1:nrow(V3), labels=row.names(V3), adj= 0.5, tick=FALSE, las = 1, cex.axis=cex.rows, font.axis=1, line=-1)   
-   cex.cols <- 0.20 + 200/(ncol(V3) * max(nchar(colnames(V3))) + 200)   
+   if (cex.cols == "auto") cex.cols <- 0.20 + 200/(ncol(V3) * max(nchar(colnames(V3))) + 200)   
 #   axis(1, at=1:ncol(V), labels=colnames(V), adj= 0.5, tick=FALSE, las = 3, cex.axis=cex.cols, font.axis=1, line=-1) # Add sample names        
 
    if (!is.null(annot_file)) {
@@ -694,7 +826,7 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    } else {
       cols = "black"
    }
-   cex.cols <- 0.20 + 200/(ncol(V3) * max(nchar(colnames(V3))) + 200)
+   if (cex.cols == "auto") cex.cols <- 0.20 + 200/(ncol(V3) * max(nchar(colnames(V3))) + 200)
    mtext(colnames(V3), at=1:ncol(V3), side = 1, cex=cex.cols, col=cols, line=0, las=3, font=2, family="")
 
    # Legend
@@ -722,18 +854,16 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    par(mar = c(lower.space, 10, 2, 6))
    image(1:ncol(V4), 1:nrow(V4), t(V4), zlim = c(0, max.cont.color + 3), col=mycol, axes=FALSE, main="Matrix in Original Order",
          sub = "", xlab= "", ylab="", cex.main=0.8)
-   cex.rows <- 0.20 + 200/(nrow(V4) * max(nchar(row.names(V4))) + 200)   
+   if (cex.rows == "auto") cex.rows <- 0.20 + 200/(nrow(V4) * max(nchar(row.names(V4))) + 200)   
    axis(2, at=1:nrow(V4), labels=row.names(V4), adj= 0.5, tick=FALSE, las = 1, cex.axis=cex.rows, font.axis=1, line=-1)
-   cex.cols <- 0.20 + 200/(ncol(V4) * max(nchar(colnames(V4))) + 200)   
-
-
+   if (cex.cols == "auto") cex.cols <- 0.20 + 200/(ncol(V4) * max(nchar(colnames(V4))) + 200)   
 
    if (!is.null(annot_file)) {
       cols <- phen.col[match(column.class, all.classes)]
    } else {
       cols = "black"
    }
-   cex.cols <- 0.20 + 200/(ncol(V4) * max(nchar(colnames(V4))) + 200)
+   if (cex.cols == "auto") cex.cols <- 0.20 + 200/(ncol(V4) * max(nchar(colnames(V4))) + 200)
    mtext(colnames(V4), at=1:ncol(V4), side = 1, cex=cex.cols, col=cols, line=0, las=3, font=2, family="")
 
    # Legend
@@ -756,28 +886,32 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    # Plot sorted by phenotype ------------------------------------------------------------------------------
 
    height <- ceiling(ncol(H)/50)
-   if (height < 11) height <- 14
+   if (height < 11) height <- 11
    pdf(file=output_plot_portrait, height=height, width=8.5)
    
    nf <- layout(matrix(c(1, 2, 0, 3), nrow=2, ncol=2, byrow=T), c(2, 5), c(12, 1), FALSE)
    par(mar = c(3, 2, 4, 2))
    image(1:1, 1:length(V1.phen), t(as.matrix(V1.phen)), col=phen.col[1:max(V1.phen)], axes=FALSE, main="Phenotype", sub = "", xlab= "", ylab="")
-   for (i in 1:length(leg.txt)) {
-      text.size <- 0.05 + 7/ifelse(nchar(leg.txt[i]) < 6, 6, nchar(leg.txt[i]))
-      text(1, locs.bound[i], labels=leg.txt[i], adj=c(0.5, 0), srt=0, cex=text.size)
+   if (!is.null(annot_file)) {
+      for (i in 1:length(leg.txt)) {
+         if (cex.phen == "auto") cex.phen <- 0.05 + 7/ifelse(nchar(leg.txt[i]) < 6, 6, nchar(leg.txt[i]))
+        text(1, locs.bound[i], labels=leg.txt[i], adj=c(0.5, 0), srt=0, cex=cex.phen)
+      }
     }
-   right.space <-  ceiling(2 + 100/nrow(H))
+   right.space <-  ceiling(2 + 70/nrow(H))
    par(mar = c(3, 8, 4, right.space))
    V2 <- apply(V2, MARGIN=2, FUN=rev)
    image(1:nrow(V2), 1:ncol(V2), V2, zlim = c(0, max.cont.color + 3), col=mycol, axes=FALSE, main="Matrix Sorted by Phenotype",
          sub = "", xlab= "", ylab="", cex.main=1)
-   cex.rows <- 0.20 + 150/(nrow(V2) * max(nchar(row.names(V2))) + 200)
+   if (cex.rows == "auto") cex.rows <- 0.20 + 150/(nrow(V2) * max(nchar(row.names(V2))) + 200)
 
-   for (i in 1:(length(boundaries)-1)) lines(c(0.5, ncol(V2) + 0.5), c(boundaries[i]+0.5, boundaries[i]+0.5), lwd=2, lty=1, col="black")   
-   axis(3, at=1:nrow(V2), labels=row.names(V2), adj= 0.5, tick=FALSE, las = 1, cex.axis=cex.rows, font.axis=1, line=-1)   
-   cex.cols <- 0.20 + 200/(ncol(V2) * max(nchar(colnames(V2))) + 200)
-   mtext(colnames(V2), at=1:ncol(V2), side = 2, cex=cex.cols, col=cols2, line=0, las=1, font=2, family="")
-
+   if (!is.null(annot_file)) {   
+      for (i in 1:(length(boundaries)-1)) lines(c(0.5, ncol(V2) + 0.5), c(boundaries[i]+0.5, boundaries[i]+0.5), lwd=2, lty=1, col="black")   
+    }
+      axis(3, at=1:nrow(V2), labels=row.names(V2), adj= 0.5, tick=FALSE, las = 1, cex.axis=cex.rows, font.axis=1, line=-1)   
+      if (cex.cols == "auto") cex.cols <- 0.20 + 200/(ncol(V2) * max(nchar(colnames(V2))) + 200)
+      mtext(colnames(V2), at=1:ncol(V2), side = 2, cex=cex.cols, col=cols2, line=0, las=1, font=2, family="")
+   
    # Legend
 
    par(mar = c(3, 5, 1, 25))
@@ -794,14 +928,14 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    # Plot sorted by columns and rows ------------------------------------------------------------------------------
    
    nf <- layout(matrix(c(1, 2), nrow=2, ncol=1, byrow=T), 1, c(12, 1), FALSE)
-   right.space <-  ceiling(2 + 100/nrow(H))
+   right.space <-  ceiling(2 + 70/nrow(H))
    par(mar = c(3, 8, 4, right.space))
    V3 <- apply(V3, MARGIN=2, FUN=rev)
    image(1:nrow(V3), 1:ncol(V3), V3, zlim = c(0, max.cont.color + 3), col=mycol, axes=FALSE,  main="Matrix Sorted (Rows and Columns)",
          sub = "", xlab= "", ylab="", cex.main=1)
-   cex.rows <- 0.20 + 150/(nrow(V3) * max(nchar(row.names(V3))) + 200)      
+   if (cex.rows == "auto") cex.rows <- 0.20 + 150/(nrow(V3) * max(nchar(row.names(V3))) + 200)      
    axis(3, at=1:nrow(V3), labels=row.names(V3), adj= 0.5, tick=FALSE, las = 1, cex.axis=cex.rows, font.axis=1, line=-1)
-   cex.cols <- 0.20 + 200/(ncol(V3) * max(nchar(colnames(V3))) + 200)   
+   if (cex.cols == "auto") cex.cols <- 0.20 + 200/(ncol(V3) * max(nchar(colnames(V3))) + 200)   
    mtext(colnames(V3), at=1:ncol(V3), side = 2, cex=cex.cols, col=cols, line=0, las=1, font=2, family="")
 
    # Legend
@@ -820,14 +954,14 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    # Plot in original order ------------------------------------------------------------------------------
    
    nf <- layout(matrix(c(1, 2), nrow=2, ncol=1, byrow=T), 1, c(12, 1), FALSE)
-   right.space <-  ceiling(2 + 100/nrow(H))
+   right.space <-  ceiling(2 + 70/nrow(H))
    par(mar = c(3, 8, 4, right.space))
    V4 <- apply(V4, MARGIN=2, FUN=rev)
    image(1:nrow(V4), 1:ncol(V4), V4, zlim = c(0, max.cont.color + 3), col=mycol, axes=FALSE, main="Matrix in Original Order",
          sub = "", xlab= "", ylab="", cex.main=1)
-   cex.rows <- 0.20 + 150/(nrow(V4) * max(nchar(row.names(V4))) + 200)         
+   if (cex.rows == "auto") cex.rows <- 0.20 + 150/(nrow(V4) * max(nchar(row.names(V4))) + 200)         
    axis(3, at=1:nrow(V4), labels=row.names(V4), adj= 0.5, tick=FALSE, las = 1, cex.axis=cex.rows, font.axis=1, line=-1)
-   cex.cols <- 0.20 + 200/(ncol(V4) * max(nchar(colnames(V4))) + 200)      
+   if (cex.cols == "auto") cex.cols <- 0.20 + 200/(ncol(V4) * max(nchar(colnames(V4))) + 200)      
    mtext(colnames(V4), at=1:ncol(V4), side = 2, cex=cex.cols, col=cols, line=0, las=1, font=2, family="")
 
    # Legend
@@ -871,13 +1005,11 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    if (normalize_after_match == F) {  # Normalize input data here before matching with W
      if (input_normalization == "rank") {
          print("A before normalization:")
-         print(m[1:5, ])
 
          max.n <- 10000
          for (i in 1:ncol(m)) m[,i] <- (max.n - 1) * (rank(m[,i]) - 1) /(nrow(m) - 1) + 1
  
          print("A after normalization:")
-         print(m[1:5, ])
    
       } else if (input_normalization == "none") {   
 
@@ -907,15 +1039,10 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
 
   if (normalize_after_match == T) {  # Normalize input data here after matching with W
      if (input_normalization == "rank") {
-         print("A before normalization:")
-         print(m[1:5, ])
 
          max.n <- 10000
          for (i in 1:ncol(m)) m[,i] <- (max.n - 1) * (rank(m[,i]) - 1) /(nrow(m) - 1) + 1
  
-         print("A after normalization:")
-         print(m[1:5, ])
-   
       } else if (input_normalization == "none") {   
 
       } else {
@@ -932,17 +1059,9 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
       }
    }
 
-   print("W:")
-   print(W[1:5, ])
-   print(" m:")
-   print(m[1:5, ])
-   
    H <- matrix(0, nrow=k.comp, ncol= ncol(m), dimnames=list(colnames(W), colnames(m)))
    for (i in 1:ncol(H)) H[, i] <- nnls.fit(W, m[, i], wsqrt=1, eps=0, rank.tol=1e-07)
 
-   print("H:")
-   print(H[1:5, ])
-   
    # Save H matrix
 
    write.gct.2(gct.data.frame = H, descs = row.names(H), filename = output_H_dataset)
@@ -1039,7 +1158,10 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
       for (k in 1:length(gene.class)) gene.class[k] <- substr(gene.class[k], 1, 10)
       all.classes <- unique(gene.class)
       colnames(H) <- paste(colnames(H), " (", gene.class, ") ", sep="")
-    }
+    } else {
+      gene.class <- rep(" ", ncol(H))
+      all.classes <- " "
+   }
    
    if (!is.null(annot_file2)) {
       annot.table2 <- read.table(annot_file2[[1]], header=T, sep="\t", skip=0, colClasses = "character")
@@ -1163,6 +1285,7 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
       input_dataset,                    # Input W matrix dataset (GCT)
       min.genes.per.comp = 50,          # Minimun number of genes per component gene set
       max.genes.per.comp = 150,         # Maximun number of genes per component gene set
+      add.prefix.to.comp.names = NULL,  # Prefix to C_<number> to better identify the gene sets                                        
       output_gene_sets_file,            # Output (GMT) file with gene sets
       output_plots)                     # Output (PDF) file with W and H plots
   {
@@ -1176,9 +1299,14 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    dataset.1 <- MSIG.Gct2Frame(filename = input_dataset)
    W <- data.matrix(dataset.1$ds)
    print(dim(W))
-
    k.comp <- ncol(W)
     
+   if (!is.null(add.prefix.to.comp.names)) {
+        for (i in 1:k.comp) {
+           colnames(W)[i] <- paste(add.prefix.to.comp.names, "_", colnames(W)[i], sep="")
+         }
+      }
+
    z.vec <- vector(length=length(k.comp), mode="numeric")
    for (i in 1:k.comp) {
 
@@ -1227,7 +1355,7 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    # Save them as a "GMT" gene set file
 
    for (i in 1:k.comp) {
-      row.header <- paste("C", i, "_", k.comp, sep="")
+      row.header <- colnames(W)[i]
       output.line <- paste(gene.sets[i, 1:z.vec[i]], collapse="\t")
       output.line <- paste(row.header, row.header, output.line, sep="\t")
       if (i == 1) {
@@ -1255,11 +1383,17 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
       output_plots,                     # Output PDF file with W and H plots
       output_W_dataset,                 # Output GCT file with W matrix
       output_H_dataset,                 # Output GCT file with H matrix
-      output_H_w_dataset)               # Output GCT file with W-derived H matrix                                              
+      output_H_w_dataset,               # Output GCT file with W-derived H matrix
+      output_A_dataset = NULL)          # Output GCT file with sorted and normalized A matrix
   {
-
    set.seed(5209761)
-    
+   
+   mycol <- vector(length=512, mode = "numeric")   # Red/Blue "pinkogram" color map
+   for (k in 1:256) mycol[k] <- rgb(255, k - 1, k - 1, maxColorValue=255)
+   for (k in 257:512) mycol[k] <- rgb(511 - (k - 1), 511 - (k - 1), 255, maxColorValue=255)
+   mycol <- rev(mycol)
+   ncolors <- length(mycol)
+
    pdf(file=output_plots, height=8.5, width=11)
 
    comp.names <- paste("C", seq(1, number_of_comp), "_", number_of_comp, sep="")
@@ -1270,16 +1404,13 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    m.1 <- data.matrix(dataset.1$ds)
    print(paste("Dimensions matrix A:", nrow(m.1), ncol(m.1)))
 
+  # heatmap(m.1, scale="row", col=mycol, margins=c(15, 15), cexRow=0.10, cexCol=0.5, main="Sorted A Matrix", xlab = "Components", ylab= "Genes")   
+
    if (normalize_after_selection == F) {  # Normalize input data here before selection
      if (input_normalization == "rank") {
-         print("A before normalization:")
-         print(m.1[1:5, ])
 
          max.n <- 10000
          for (i in 1:ncol(m.1)) m.1[,i] <- (max.n - 1) * (rank(m.1[,i]) - 1) /(nrow(m.1) - 1) + 1
- 
-         print("A after normalization:")
-         print(m.1[1:5, ])
    
       } else if (input_normalization == "none") {   
 
@@ -1289,6 +1420,8 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    }
    
    if (gene_subset == "gene-sets") {  # select relevant genes from gene sets
+
+        print("Selecting relevant genes from gene sets")
 
 	max.G <- 0
 	max.N <- 0
@@ -1336,25 +1469,27 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
         print(paste("Number of selected genes:", length(genes)))
         genes <- unique(genes)
         print(paste("Number of unique selected genes:", length(genes)))        
+        genes <- intersect(genes, row.names(m.1))
+        print(paste("Number of overlapping genes (final set):", length(genes)))        
         m.2 <- m.1[genes,]
         print("Dimensions of selected input data:")
         print(dim(m.2))
 
-   } else if (gene_subset == "all-genes") {     
+   } else if (gene_subset == "all-genes") {
+
+        print("Using all genes from gene sets")
+        
       m.2 <- m.1
+   } else {
+      stop(paste("ERROR: unknown gene subset selection:", gene_subset))
    }
 
    if (normalize_after_selection == T) {  # Normalize input data here after selection
    
       if (input_normalization == "rank") {
-         print("A before normalization:")
-         print(m.2[1:5, ])
 
          max.n <- 10000
          for (i in 1:ncol(m.2)) m.2[,i] <- (max.n - 1) * (rank(m.2[,i]) - 1) /(nrow(m.2) - 1) + 1
-
-         print("A after normalization:")
-         print(m.2[1:5, ])
 
        } else if (input_normalization == "none") {   
 
@@ -1397,23 +1532,14 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    
    # end of matrix factorization
 
-
   ind <- order(row.names(W))
   W <- W[ind,]
   m.2 <- m.2[ind,]
    
    # Obtain H via W: Project original and additional dataset using non-negative solver
 
-   print("W:")
-   print(W[1:5, ])
-   print(" m:")
-   print(m.2[1:5, ])
-   
    H_w <- matrix(0, nrow=number_of_comp, ncol= ncol(m.2), dimnames=list(row.names(H), colnames(H)))
    for (i in 1:ncol(H_w)) H_w[, i] <- nnls.fit(W, m.2[, i], wsqrt=1, eps=0, rank.tol=1e-07)
-
-   print("H_w:")
-   print(H_w[1:5, ])
 
    # Save W and H matrices
 
@@ -1422,12 +1548,6 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    write.gct.2(gct.data.frame = H_w, descs = row.names(H_w), filename = output_H_w_dataset)   
 
    # Plot sorted W, H  and A matrices
-
-    mycol <- vector(length=512, mode = "numeric")   # Red/Blue "pinkogram" color map
-   for (k in 1:256) mycol[k] <- rgb(255, k - 1, k - 1, maxColorValue=255)
-   for (k in 257:512) mycol[k] <- rgb(511 - (k - 1), 511 - (k - 1), 255, maxColorValue=255)
-   mycol <- rev(mycol)
-   ncolors <- length(mycol)
 
    hc <- hclust(dist(t(W)), "complete")
    d1.W <- as.dendrogram(hc)
@@ -1446,6 +1566,18 @@ lines(c(boundaries[i]+0.5, boundaries[i]+0.5), c(0.5, nrow(V2) + 0.5), lwd=2, lt
    heatmap(H_w, Colv=d1.H, Rowv = d1.W,  scale="col", col=mycol, margins=c(15, 15), cexRow=0.10, cexCol=0.5, main="Sorted H_w Matrix",
              xlab = "Components", ylab= "Genes")
 
+   hc <- hclust(dist(t(m.2)), "complete")
+   d1.A <- as.dendrogram(hc)
+   hc2 <- hclust(dist(m.2), "complete")
+   d2.A <- as.dendrogram(hc2)
+
+#   heatmap(m.2, Colv=d1.A, Rowv = d2.A,  scale="none", col=mycol, margins=c(15, 15), cexRow=0.10, cexCol=0.5, main="Sorted A Matrix", xlab = "Components", ylab= "Genes")
+    heatmap(m.2, scale="row", col=mycol, margins=c(15, 15), cexRow=0.10, cexCol=0.5, main="Sorted A Matrix", xlab = "Components", ylab= "Genes")
+
+   if (!is.null(output_A_dataset)) {
+      m.2 <- m.2[hc2$order, hc$order]
+      write.gct.2(gct.data.frame = m.2, descs = row.names(m.2), filename = output_A_dataset)
+    }
    dev.off()
   
  }
